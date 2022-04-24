@@ -437,3 +437,84 @@ P pack-816a9b2334da9953e530f27bcac22082a9f5b835.pack
 ```
 
 ### SMART Protocol
+
+Dumb Protocol은 단순하지만 클라이언트에서 서버로 쓰기 작업을 할 수 없다는 단점이 있다.
+Smart Protocol이 좀 더 좋지만, 서버가 깃을 잘 지원해야 한다. (로컬 데이터를 읽고, 클라이언트에 어떤 데이터가 있고 어떤 데이터를 필요로 하는 지 알아야 하고, 이를 위한 커스텀 packfile을 생성할 수 있어야 한다.)
+
+스마트 프로토콜에는 데이터 업로드를 위한 프로세스, 데이터 다운로드를 위한 프로세스 이렇게 2가지 셋의 프로세스가 있다.
+
+#### Uploading Data
+
+##### HTTPS
+
+`git push origin master` 을 치면, 깃은 `send-pack` 프로세스를 시작한다. 이 때 깃은 다음과 같은 HTTP 요청을 보낸다
+
+```bash
+=> GET http://server/simplegit-progit.git/info/refs?service=git-receive-pack
+001f# service=git-receive-pack
+00ab6c5f0e45abd7832bf23074a333f739977c9e8188 refs/heads/master□report-status \
+	delete-refs side-band-64k quiet ofs-delta \
+	agent=git/2:2.1.1~vmg-bitmaps-bugaloo-608-g116744e
+0000
+```
+
+`git-receive-pack` 은 현재 갖고 있는 reference를 return 해준다.
+
+reference를 서버에서 받은 클라이언트들은 서버의 상태를 이제 알기 때문에, `send-pack` 프로세스가 현재 클라이언트에 어떤 커밋이 있고, 서버에는 어떤 커밋이 없는지 체크한다.
+
+`send-pack` 프로세스는 서버 측 `receive-pack` 프로세스에게 POST 요청을 보낸다. 이번 push가 업데이트할 모든 reference에 대한 데이터(`send-pack` output)와 서버에 없는 packfile 을 보내준다.
+
+```text
+=> POST http://server/simplegit-progit.git/git-receive-pack
+```
+
+클라이언트에서 깃은 각 reference 에 대해서 old SHA-1, new SHA-1, 그리고 업데이트 할 reference 정보를 보내준다.
+
+예를 들어 master branch에 커밋을 넣고 experiment 브랜치가 추가된 상황이라면, `send-pack`의 response는 다음과 같다.
+
+```text
+0076ca82a6dff817ec66f44342007202690a93763949 15027957951b64cf874c3557a0f3547bd83b3ff6 \
+	refs/heads/master report-status
+006c0000000000000000000000000000000000000000 cdfdb42577e2506715f8cfeacdbabc092bf63e8d \
+	refs/heads/experiment
+0000
+```
+
+#### Downloading Data
+
+다운로드 프로세스에서는 `fetch-pack` 과 `upload-pack` 프로세스가 사용된다.
+클라이언트에서 `fetch-pack`을 해서 서버 측 `upload-pack` 프로세스와 연결하고, 어떤 데이터를 전송받을지 결정한다.
+
+##### HTTP
+
+fetch를 할 때는 2번의 HTTP Request를 한다.
+
+첫번째는 GET 요청을 보낸다. 이에 대한 응답으로 현재 HEAD가 가리키는 위치를 보내준다.
+
+```bash
+=> GET $GIT_URL/info/refs?service=git-upload-pack
+001e# service=git-upload-pack
+00e7ca82a6dff817ec66f44342007202690a93763949 HEAD□multi_ack thin-pack \
+	side-band side-band-64k ofs-delta shallow no-progress include-tag \
+	multi_ack_detailed no-done symref=HEAD:refs/heads/master \
+	agent=git/2:2.1.1+github-607-gfba4028
+003fca82a6dff817ec66f44342007202690a93763949 refs/heads/master
+0000
+```
+
+`fetch-pack`은 어떤 오브젝트가 있는지 확인하고, 자신이 가지고 있는 오브젝트에 대해선 'have', 서버로부터 받아와야 하는 오브젝트에 대해서는 'want'를 표시해서 서버에 POST 요청을 보낸다.
+
+```text
+=> POST $GIT_URL/git-upload-pack HTTP/1.0
+0032want 0a53e9ddeaddad63ad106860237bbf53411d11a7
+0032have 441b40d833fdfa93eb2908e52742248faf0ee993
+0000
+```
+
+## Maintenance and Data Recovery
+
+### Removing Objects
+
+한가지 문제가 될 수 있는 상황은 `git clone`을 하면 프로젝트의 과거 history를 받게 되는데, 만약에 과거 히스토리에 엄청 큰 용량의 파일이 있었다면, clone 할 때마다 그 파일을 다운로드해야 하므로 문제가 될 수 있다.
+
+> 이에 대한 해결방법이 적혀있긴 한데 이것까지 설명하기엔 좀 과한거같아서 있따 정도만 알아두고 넘어갑시다
